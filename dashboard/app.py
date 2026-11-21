@@ -6,7 +6,17 @@ Responsibility:
     renders the eight-section layout without duplicating backend logic.
 """
 
+import sys
 from pathlib import Path
+
+# -----------------------------------------------------------------------------
+# Module Search Path Initialization (Must precede project-specific imports)
+# Resolves repository root for Streamlit Community Cloud and standalone execution
+# -----------------------------------------------------------------------------
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from dataclasses import asdict
 import streamlit as st
 

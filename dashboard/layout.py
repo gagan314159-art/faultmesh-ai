@@ -533,6 +533,36 @@ def sidebar_live_iot_controls(
     mqtt_mgr.config.port = int(broker_port)
     mqtt_mgr.config.topic = broker_topic.strip()
 
+    is_tls = bool(mqtt_mgr.config.use_tls or int(broker_port) == 8883)
+    use_tls_toggle = st_ctx.sidebar.checkbox(
+        "Enable TLS / MQTTS (Port 8883)",
+        value=is_tls,
+        help="Enable secure TLS certificate and hostname verification for encrypted broker connectivity.",
+    )
+    mqtt_mgr.config.use_tls = use_tls_toggle
+
+    # Authentication credentials expander (preserves cloud secrets, masks passwords)
+    with st_ctx.sidebar.expander("Authentication & Credentials", expanded=False):
+        current_user = mqtt_mgr.config.username or ""
+        input_user = st_ctx.sidebar.text_input(
+            "Subscriber Username",
+            value=current_user,
+            help="Username for broker authentication.",
+            key="sb_mqtt_user",
+        )
+        input_pwd = st_ctx.sidebar.text_input(
+            "Subscriber Password",
+            type="password",
+            value="",
+            placeholder="••••••••" if mqtt_mgr.config.password else "Enter password",
+            help="Password for broker authentication (leave blank to keep configured secret).",
+            key="sb_mqtt_pwd",
+        )
+        if input_user != current_user:
+            mqtt_mgr.config.username = input_user.strip() if input_user.strip() else None
+        if input_pwd.strip():
+            mqtt_mgr.config.password = input_pwd.strip()
+
     # Connection buttons
     status = mqtt_mgr.get_status()
     is_connected = status.get("is_connected", False)
@@ -613,6 +643,7 @@ def sidebar_live_iot_controls(
     gw_sim.publish_interval = float(interval)
     gw_sim.broker_host = mqtt_mgr.config.host
     gw_sim.broker_port = mqtt_mgr.config.port
+    gw_sim.use_tls = bool(mqtt_mgr.config.use_tls or mqtt_mgr.config.port == 8883)
 
     col_gw1, col_gw2 = st_ctx.sidebar.columns(2)
     with col_gw1:
@@ -669,6 +700,10 @@ def _build_live_iot_view(
         "Continuously evaluates multi-sensor streams, enforces baseline calibration, "
         "and isolates root-cause anomalies across physical mesh connections."
     )
+    broker_endpoint = f"`{mqtt_mgr.config.host}:{mqtt_mgr.config.port}`"
+    tls_badge = "🔒 **TLS / MQTTS (Encrypted)**" if (mqtt_mgr.config.use_tls or mqtt_mgr.config.port == 8883) else "🔓 **Plaintext TCP**"
+    auth_badge = f"👤 User: `{mqtt_mgr.config.username}`" if mqtt_mgr.config.username else "👤 Anonymous"
+    st_ctx.caption(f"Broker Endpoint: {broker_endpoint} &nbsp;|&nbsp; Security: {tls_badge} &nbsp;|&nbsp; Auth: {auth_badge}")
     st_ctx.info(
         "**Notice:** Industrial decision-support telemetry monitor. "
         "Read-only ingestion mode — does not issue actuator commands or override plant safety interlocks."
@@ -830,6 +865,9 @@ def _build_live_iot_view(
                 "Paho Client Pointer",
                 "Paho Network Loop Status",
                 "Broker Host & Port",
+                "TLS Encryption Status",
+                "CA Certificate Verification",
+                "Authentication Status",
                 "Connection State",
                 "Subscription Status",
                 "Configured Topic",
@@ -853,6 +891,9 @@ def _build_live_iot_view(
                 mqtt_status.get("paho_client_ptr", "N/A"),
                 mqtt_status.get("network_loop_status", "Stopped"),
                 f"{mqtt_status.get('broker_host', 'localhost')}:{mqtt_status.get('broker_port', 1883)}",
+                "Enabled (TLS / MQTTS)" if mqtt_status.get("use_tls") else "Disabled (Plaintext TCP)",
+                "Strict Verification (CERT_REQUIRED, check_hostname=True)" if mqtt_status.get("use_tls") else "N/A (Plaintext)",
+                f"Authenticated ({mqtt_status.get('username')})" if mqtt_status.get("has_auth") else "Anonymous",
                 mqtt_status.get("connection_state", "DISCONNECTED"),
                 mqtt_status.get("subscription_status", "Inactive"),
                 mqtt_status.get("topic", "N/A"),

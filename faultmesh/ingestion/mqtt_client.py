@@ -40,6 +40,8 @@ class MQTTConnectionConfig:
     keepalive: int = DEFAULT_KEEPALIVE
     username: Optional[str] = None
     password: Optional[str] = None
+    use_tls: bool = False
+    ca_certs: Optional[str] = None
 
 
 class MQTTClientManager:
@@ -104,9 +106,30 @@ class MQTTClientManager:
             client = mqtt.Client(client_id=client_id)
             self._log(f"Initialized MQTT client '{client_id}' with legacy callback API")
 
-        # Configure credentials if provided
+        # Configure subscriber credentials if provided (never log passwords)
         if self.config.username:
             client.username_pw_set(self.config.username, self.config.password)
+            self._log(f"Configured MQTT client authentication for user '{self.config.username}'")
+
+        # Configure secure TLS encryption if enabled or default secure port 8883 is used
+        if self.config.use_tls or self.config.port == 8883:
+            import ssl
+            try:
+                if self.config.ca_certs:
+                    client.tls_set(ca_certs=self.config.ca_certs)
+                else:
+                    client.tls_set()
+
+                # Explicitly enforce certificate and hostname verification (never allow CERT_NONE)
+                if hasattr(client, "_ssl_context") and client._ssl_context is not None:
+                    client._ssl_context.check_hostname = True
+                    client._ssl_context.verify_mode = ssl.CERT_REQUIRED
+
+                ca_source = self.config.ca_certs or "Python default CA trust store"
+                self._log(f"Configured secure TLS on client (CA: {ca_source}, verify: CERT_REQUIRED, hostname: True)")
+            except Exception as tls_err:
+                self._log(f"TLS configuration failure: {tls_err}")
+                raise
 
         # Attach callbacks with flexible argument signatures
         client.on_connect = self._on_connect_callback
@@ -305,9 +328,10 @@ class MQTTClientManager:
 
         try:
             self.client = self._create_paho_client(client_id)
+            is_tls = bool(self.config.use_tls or self.config.port == 8883)
             self._log(
                 f"Connecting to broker {self.config.host}:{self.config.port}... "
-                f"[Client: {client_obj_id}, ID: {client_id}, Queue: {queue_obj_id}]"
+                f"[Client: {client_obj_id}, ID: {client_id}, Queue: {queue_obj_id}, TLS: {is_tls}]"
             )
 
             # Try direct connect first with short timeout, fallback to connect_async
@@ -332,9 +356,13 @@ class MQTTClientManager:
             with self._lock:
                 self.is_connected = False
                 self.connection_state = "ERROR"
-                self.last_error = str(exc)
-            self._log(f"Failed to connect to broker: {exc}")
-            return False, f"Could not connect to {self.config.host}:{self.config.port}: {exc}"
+                err_msg = str(exc)
+                if "certificate verify failed" in err_msg.lower() or "ssl" in err_msg.lower() or "tls" in err_msg.lower():
+                    self.last_error = f"TLS/SSL certificate or handshake error: {err_msg}"
+                else:
+                    self.last_error = err_msg
+            self._log(f"Failed to connect to broker: {self.last_error}")
+            return False, f"Could not connect to {self.config.host}:{self.config.port}: {self.last_error}"
 
     def disconnect(self) -> Tuple[bool, str]:
         """Cleanly disconnect from the MQTT broker."""
@@ -390,6 +418,10 @@ class MQTTClientManager:
                 "broker_host": self.config.host,
                 "broker_port": self.config.port,
                 "topic": self.config.topic,
+                "use_tls": bool(self.config.use_tls or self.config.port == 8883),
+                "has_auth": bool(self.config.username),
+                "username": self.config.username or "None",
+                "ca_certs": self.config.ca_certs or "System CA Store",
                 "last_connected_at": self.last_connected_at,
                 "last_subscribed_at": self.last_subscribed_at,
                 "last_message_at": self.last_message_at,

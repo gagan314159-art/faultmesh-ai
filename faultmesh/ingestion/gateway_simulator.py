@@ -36,6 +36,10 @@ class GatewaySimulator:
         topic_prefix: str = "faultmesh/sensors",
         machine_id: str = "MACHINE_01",
         publish_interval: float = 1.0,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        use_tls: bool = False,
+        ca_certs: Optional[str] = None,
     ) -> None:
         """Initialize the gateway simulator."""
         self.broker_host = broker_host
@@ -43,6 +47,10 @@ class GatewaySimulator:
         self.topic_prefix = topic_prefix.rstrip("/")
         self.machine_id = machine_id
         self.publish_interval = max(0.1, publish_interval)
+        self.username = username
+        self.password = password
+        self.use_tls = use_tls
+        self.ca_certs = ca_certs
 
         self.is_running: bool = False
         self._stop_event = threading.Event()
@@ -135,12 +143,30 @@ class GatewaySimulator:
             except Exception:
                 self._mqtt_client = mqtt.Client(client_id=client_id)
 
+            # Independent publisher authentication
+            if self.username:
+                self._mqtt_client.username_pw_set(self.username, self.password)
+
+            # Secure TLS configuration
+            if self.use_tls or self.broker_port == 8883:
+                import ssl
+                if self.ca_certs:
+                    self._mqtt_client.tls_set(ca_certs=self.ca_certs)
+                else:
+                    self._mqtt_client.tls_set()
+                if hasattr(self._mqtt_client, "_ssl_context") and self._mqtt_client._ssl_context is not None:
+                    self._mqtt_client._ssl_context.check_hostname = True
+                    self._mqtt_client._ssl_context.verify_mode = ssl.CERT_REQUIRED
+
             self._mqtt_client.connect(self.broker_host, self.broker_port, keepalive=60)
             self._mqtt_client.loop_start()
         except Exception as exc:
             with self._lock:
                 self.is_running = False
-            return False, f"Could not connect gateway publisher to MQTT broker: {exc}"
+            err_msg = str(exc)
+            if "certificate verify failed" in err_msg.lower() or "ssl" in err_msg.lower() or "tls" in err_msg.lower():
+                err_msg = f"TLS/SSL publisher error: {err_msg}"
+            return False, f"Could not connect gateway publisher to MQTT broker: {err_msg}"
 
         self._thread = threading.Thread(target=self._publish_loop, daemon=True, name="GatewaySimulatorThread")
         self._thread.start()
@@ -219,4 +245,7 @@ class GatewaySimulator:
                 "publish_interval": self.publish_interval,
                 "broker": f"{self.broker_host}:{self.broker_port}",
                 "topic_prefix": self.topic_prefix,
+                "use_tls": bool(self.use_tls or self.broker_port == 8883),
+                "has_auth": bool(self.username),
+                "username": self.username or "None",
             }

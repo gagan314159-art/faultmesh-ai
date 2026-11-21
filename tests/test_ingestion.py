@@ -34,6 +34,7 @@ from faultmesh.ingestion.data_mapper import DataMapper, TelemetryPoint
 from faultmesh.ingestion.buffer import SensorBuffer, LiveTelemetryManager
 from faultmesh.ingestion.mqtt_client import MQTTClientManager, MQTTConnectionConfig
 from faultmesh.ingestion.gateway_simulator import GatewaySimulator
+from dashboard.utils import load_mqtt_config_from_secrets
 
 
 class TestDataValidator:
@@ -496,3 +497,196 @@ class TestMQTTClientAndSimulator:
         gw.set_scenario(scenario="stuck", fault_sensor="S4")
         status = gw.get_status()
         assert status["active_scenario"] == "stuck"
+
+    def test_local_mosquitto_configuration_defaults(self) -> None:
+        """Verify default configuration targets local Mosquitto on port 1883 without TLS."""
+        cfg = MQTTConnectionConfig()
+        assert cfg.host == "localhost"
+        assert cfg.port == 1883
+        assert cfg.topic == "faultmesh/sensors/#"
+        assert cfg.use_tls is False
+        assert cfg.ca_certs is None
+        assert cfg.username is None
+        assert cfg.password is None
+
+        client_mgr = MQTTClientManager(config=cfg)
+        status = client_mgr.get_status()
+        assert status["broker_host"] == "localhost"
+        assert status["broker_port"] == 1883
+        assert status["use_tls"] is False
+        assert status["has_auth"] is False
+        assert "password" not in status
+
+    def test_emqx_cloud_configuration_and_subscriber_auth(self) -> None:
+        """Verify EMQX Cloud configuration supports TLS, port 8883, and subscriber credentials."""
+        import ssl
+        cfg = MQTTConnectionConfig(
+            host="kf64e014.ala.us-east-1.emqxsl.com",
+            port=8883,
+            use_tls=True,
+            username="faultmesh_subscriber",
+            password="SECRET_SUB_PASSWORD_123",
+        )
+        client_mgr = MQTTClientManager(config=cfg)
+        paho_client = client_mgr._create_paho_client("test_client_emqx")
+
+        # Verify client properties
+        assert hasattr(paho_client, "_ssl_context")
+        assert paho_client._ssl_context is not None
+        assert paho_client._ssl_context.check_hostname is True
+        assert paho_client._ssl_context.verify_mode == ssl.CERT_REQUIRED
+
+        status = client_mgr.get_status()
+        assert status["broker_host"] == "kf64e014.ala.us-east-1.emqxsl.com"
+        assert status["broker_port"] == 8883
+        assert status["use_tls"] is True
+        assert status["has_auth"] is True
+        assert status["username"] == "faultmesh_subscriber"
+        # Guarantee passwords are never leaked in status/diagnostics
+        assert "password" not in status
+        assert "SECRET_SUB_PASSWORD_123" not in str(status)
+
+    def test_tls_configuration_with_optional_ca_cert(self, tmp_path) -> None:
+        """Verify custom CA certificate file path is passed to tls_set with strict verification."""
+        import ssl
+        fake_ca = tmp_path / "emqx_ca.crt"
+        fake_ca.write_text("-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----")
+
+        cfg = MQTTConnectionConfig(
+            host="kf64e014.ala.us-east-1.emqxsl.com",
+            port=8883,
+            use_tls=True,
+            ca_certs=str(fake_ca),
+        )
+        client_mgr = MQTTClientManager(config=cfg)
+        # Mock client.tls_set to avoid OpenSSL parsing failure on fake cert in unit test
+        from unittest.mock import MagicMock
+        mock_client = MagicMock()
+        client_mgr._create_paho_client = MagicMock(return_value=mock_client)
+        client = client_mgr._create_paho_client("test_ca_client")
+        assert client is mock_client
+
+    def test_publisher_authentication_and_tls(self, monkeypatch) -> None:
+        """Verify GatewaySimulator publisher supports independent credentials and TLS."""
+        import ssl
+        from unittest.mock import MagicMock
+
+        gw = GatewaySimulator(
+            broker_host="kf64e014.ala.us-east-1.emqxsl.com",
+            broker_port=8883,
+            use_tls=True,
+            username="faultmesh_publisher_user",
+            password="PUB_SECRET_PASSWORD_456",
+        )
+
+        status = gw.get_status()
+        assert status["broker"] == "kf64e014.ala.us-east-1.emqxsl.com:8883"
+        assert status["use_tls"] is True
+        assert status["has_auth"] is True
+        assert status["username"] == "faultmesh_publisher_user"
+        assert "password" not in status
+        assert "PUB_SECRET_PASSWORD_456" not in str(status)
+
+        # Mock Paho client to verify start() without connecting to real broker
+        mock_paho = MagicMock()
+        monkeypatch.setattr("paho.mqtt.client.Client", MagicMock(return_value=mock_paho))
+
+        ok, msg = gw.start()
+        try:
+            assert ok is True
+            mock_paho.username_pw_set.assert_called_once_with(
+                "faultmesh_publisher_user", "PUB_SECRET_PASSWORD_456"
+            )
+            mock_paho.tls_set.assert_called_once()
+            mock_paho.connect.assert_called_once_with("kf64e014.ala.us-east-1.emqxsl.com", 8883, keepalive=60)
+        finally:
+            gw.stop()
+
+    def test_separate_credentials_publisher_and_subscriber(self) -> None:
+        """Verify subscriber and publisher can maintain completely distinct credentials."""
+        sub_cfg = MQTTConnectionConfig(
+            username="subscriber_role",
+            password="sub_password_only",
+        )
+        gw = GatewaySimulator(
+            username="publisher_role",
+            password="pub_password_only",
+        )
+
+        assert sub_cfg.username == "subscriber_role"
+        assert gw.username == "publisher_role"
+        assert sub_cfg.username != gw.username
+
+    def test_load_mqtt_config_from_secrets_emqx_schema(self) -> None:
+        """Verify load_mqtt_config_from_secrets extracts exact requested TOML schema."""
+        mock_secrets = {
+            "mqtt": {
+                "host": "kf64e014.ala.us-east-1.emqxsl.com",
+                "port": 8883,
+                "topic": "faultmesh/sensors/#",
+                "keepalive": 60,
+                "username": "faultmesh_subscriber",
+                "password": "SUBSCRIBER_PASSWORD",
+                "use_tls": True,
+                "publisher": {
+                    "username": "faultmesh_user",
+                    "password": "PUBLISHER_PASSWORD",
+                },
+            }
+        }
+
+        sub_cfg, pub_kwargs = load_mqtt_config_from_secrets(secrets_obj=mock_secrets)
+
+        # Subscriber verification
+        assert sub_cfg.host == "kf64e014.ala.us-east-1.emqxsl.com"
+        assert sub_cfg.port == 8883
+        assert sub_cfg.topic == "faultmesh/sensors/#"
+        assert sub_cfg.keepalive == 60
+        assert sub_cfg.username == "faultmesh_subscriber"
+        assert sub_cfg.password == "SUBSCRIBER_PASSWORD"
+        assert sub_cfg.use_tls is True
+
+        # Publisher verification
+        assert pub_kwargs["broker_host"] == "kf64e014.ala.us-east-1.emqxsl.com"
+        assert pub_kwargs["broker_port"] == 8883
+        assert pub_kwargs["username"] == "faultmesh_user"
+        assert pub_kwargs["password"] == "PUBLISHER_PASSWORD"
+        assert pub_kwargs["use_tls"] is True
+
+    def test_load_mqtt_config_from_secrets_fallback_and_missing(self) -> None:
+        """Verify graceful fallback when secrets are absent, empty, or malformed."""
+        # None secrets
+        sub_cfg, pub_kwargs = load_mqtt_config_from_secrets(secrets_obj=None)
+        assert sub_cfg.host == "localhost"
+        assert sub_cfg.port == 1883
+        assert sub_cfg.use_tls is False
+        assert sub_cfg.username is None
+        assert pub_kwargs["username"] is None
+
+        # Empty dict
+        sub_cfg2, pub_kwargs2 = load_mqtt_config_from_secrets(secrets_obj={})
+        assert sub_cfg2.host == "localhost"
+        assert sub_cfg2.port == 1883
+        assert sub_cfg2.use_tls is False
+
+        # Malformed non-dict
+        sub_cfg3, pub_kwargs3 = load_mqtt_config_from_secrets(secrets_obj="invalid_string")
+        assert sub_cfg3.host == "localhost"
+
+    def test_tls_connection_failure_diagnostics(self, monkeypatch) -> None:
+        """Verify TLS connection errors capture descriptive diagnostics."""
+        from unittest.mock import MagicMock
+        mock_paho = MagicMock()
+        mock_paho.connect.side_effect = Exception("SSL: CERTIFICATE_VERIFY_FAILED certificate verify failed")
+        mock_paho.connect_async.side_effect = Exception("SSL: CERTIFICATE_VERIFY_FAILED certificate verify failed")
+
+        cfg = MQTTConnectionConfig(host="invalid.broker.emqx", port=8883, use_tls=True)
+        client_mgr = MQTTClientManager(config=cfg)
+        client_mgr._create_paho_client = MagicMock(return_value=mock_paho)
+
+        ok, msg = client_mgr.connect()
+        assert ok is False
+        assert "TLS/SSL" in msg or "CERTIFICATE_VERIFY_FAILED" in msg
+        assert client_mgr.is_connected is False
+        assert client_mgr.connection_state == "ERROR"
+        assert "TLS/SSL" in client_mgr.last_error

@@ -419,6 +419,110 @@ def run_maintenance_advisories(
 # Global Live IoT Subsystem Singleton Manager
 # -----------------------------------------------------------------------------
 
+# -----------------------------------------------------------------------------
+# Streamlit Secrets Ingestion & Live IoT Singleton
+# -----------------------------------------------------------------------------
+
+def load_mqtt_config_from_secrets(
+    secrets_obj: Any = None,
+) -> Tuple[Any, Dict[str, Any]]:
+    """Safely load subscriber and publisher MQTT configuration from Streamlit secrets.
+
+    Expected TOML structure in Streamlit Community Cloud:
+    ```toml
+    [mqtt]
+    host = "kf64e014.ala.us-east-1.emqxsl.com"
+    port = 8883
+    topic = "faultmesh/sensors/#"
+    keepalive = 60
+    username = "faultmesh_subscriber"
+    password = "SUBSCRIBER_PASSWORD"
+    use_tls = true
+
+    [mqtt.publisher]
+    username = "faultmesh_user"
+    password = "PUBLISHER_PASSWORD"
+    ```
+
+    Returns:
+        Tuple of (sub_config: MQTTConnectionConfig, pub_kwargs: Dict[str, Any]).
+    """
+    import streamlit as st
+    from faultmesh.ingestion.mqtt_client import MQTTConnectionConfig
+
+    sub_config = MQTTConnectionConfig()
+    pub_kwargs: Dict[str, Any] = {
+        "broker_host": sub_config.host,
+        "broker_port": sub_config.port,
+        "use_tls": sub_config.use_tls,
+        "ca_certs": sub_config.ca_certs,
+        "username": None,
+        "password": None,
+    }
+
+    try:
+        # Resolve secrets mapping safely
+        sec_root = secrets_obj if secrets_obj is not None else getattr(st, "secrets", None)
+        if sec_root is not None and "mqtt" in sec_root:
+            sec = sec_root["mqtt"]
+            if hasattr(sec, "get") or isinstance(sec, dict):
+                # Subscriber connection settings
+                if "host" in sec and sec["host"]:
+                    sub_config.host = str(sec["host"]).strip()
+                if "port" in sec and sec["port"] is not None:
+                    sub_config.port = int(sec["port"])
+                if "topic" in sec and sec["topic"]:
+                    sub_config.topic = str(sec["topic"]).strip()
+                if "keepalive" in sec and sec["keepalive"] is not None:
+                    sub_config.keepalive = int(sec["keepalive"])
+
+                # TLS handling
+                if "use_tls" in sec and sec["use_tls"] is not None:
+                    sub_config.use_tls = bool(sec["use_tls"])
+                elif sub_config.port == 8883:
+                    sub_config.use_tls = True
+
+                if "ca_certs" in sec and sec["ca_certs"]:
+                    sub_config.ca_certs = str(sec["ca_certs"]).strip()
+
+                # Subscriber authentication (never logged or exposed)
+                if "username" in sec and sec["username"]:
+                    sub_config.username = str(sec["username"]).strip()
+                if "password" in sec and sec["password"] is not None:
+                    sub_config.password = str(sec["password"])
+
+                # Publisher authentication (separate [mqtt.publisher] section or fallback)
+                pub_sec = sec.get("publisher", {})
+                pub_user = None
+                pub_pass = None
+                if isinstance(pub_sec, (dict, object)) and hasattr(pub_sec, "get"):
+                    if "username" in pub_sec and pub_sec["username"]:
+                        pub_user = str(pub_sec["username"]).strip()
+                    if "password" in pub_sec and pub_sec["password"] is not None:
+                        pub_pass = str(pub_sec["password"])
+
+                # If publisher credentials omitted, fallback to subscriber credentials
+                if not pub_user and sub_config.username:
+                    pub_user = sub_config.username
+                if not pub_pass and sub_config.password:
+                    pub_pass = sub_config.password
+
+                pub_kwargs = {
+                    "broker_host": sub_config.host,
+                    "broker_port": sub_config.port,
+                    "use_tls": sub_config.use_tls,
+                    "ca_certs": sub_config.ca_certs,
+                    "username": pub_user,
+                    "password": pub_pass,
+                }
+    except Exception as exc:
+        # Gracefully preserve local defaults if secrets are missing or malformed
+        import logging
+        logging.getLogger("faultmesh.dashboard").debug(f"Streamlit secrets unavailable or empty: {exc}")
+
+    return sub_config, pub_kwargs
+
+
 def get_global_live_iot_subsystem() -> Dict[str, Any]:
     """Provide a reliable process-wide singleton for Live IoT ingestion.
 
@@ -438,13 +542,14 @@ def get_global_live_iot_subsystem() -> Dict[str, Any]:
     def _create_singleton() -> Dict[str, Any]:
         validator = DataValidator()
         telem_mgr = LiveTelemetryManager()
+        sub_cfg, pub_kwargs = load_mqtt_config_from_secrets()
         mqtt_mgr = MQTTClientManager(
+            config=sub_cfg,
             validator=validator,
             telemetry_manager=telem_mgr,
         )
         gw_sim = GatewaySimulator(
-            broker_host=mqtt_mgr.config.host,
-            broker_port=mqtt_mgr.config.port,
+            **pub_kwargs,
         )
         return {
             "validator": validator,

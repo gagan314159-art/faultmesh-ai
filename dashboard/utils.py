@@ -20,6 +20,10 @@ from faultmesh.processing import add_features
 from faultmesh.detector import AnomalyDetector, first_onset
 from faultmesh.graph import SensorNetworkGraph
 from faultmesh.localizer import FaultLocalizer
+from faultmesh.explainer import FaultExplainer, InvestigationReport
+from faultmesh.health import SensorHealthMonitor, SensorHealthReport, NetworkHealthSummary
+from faultmesh.maintenance import MaintenanceAdvisor, MaintenanceAdvisory, NetworkMaintenanceSummary
+from faultmesh.reporting import build_investigation_summary, export_summary_csv, generate_pdf_report
 from evaluate import calculate_metrics
 
 CACHE_DIR = Path("data/cache")
@@ -339,3 +343,116 @@ def load_benchmark(
         return metrics
     except Exception:
         return None
+
+
+def run_explainability(
+    scores_df: pd.DataFrame,
+    onsets: Dict[str, Optional[int]],
+    rankings: List[Tuple[str, float, Dict[str, Any]]],
+    graph: Optional[SensorNetworkGraph] = None,
+) -> InvestigationReport:
+    """Execute explainable fault investigation decomposition."""
+    explainer = FaultExplainer(network_graph=graph)
+    return explainer.explain(scores_df=scores_df, onsets=onsets, rankings=rankings)
+
+
+def run_health_assessment(
+    readings_df: Optional[pd.DataFrame],
+    scores_df: Optional[pd.DataFrame] = None,
+    onsets: Optional[Dict[str, Optional[int]]] = None,
+) -> Tuple[Dict[str, SensorHealthReport], NetworkHealthSummary]:
+    """Execute fleet-wide sensor operational health evaluation and network aggregation."""
+    monitor = SensorHealthMonitor()
+    reports = monitor.assess_all(readings_df, scores_df, onsets=onsets)
+    summary = monitor.summarize_network_health(reports)
+    return reports, summary
+
+
+def run_maintenance_advisories(
+    health_reports: Optional[Dict[str, Any]] = None,
+    rankings: Optional[List[Tuple[str, float, Dict[str, Any]]]] = None,
+    investigation_report: Optional[Any] = None,
+    scores_df: Optional[pd.DataFrame] = None,
+    onsets: Optional[Dict[str, Optional[int]]] = None,
+    suspect_sensor: Optional[str] = None,
+    fault_type: Optional[str] = None,
+    confidence_level: Optional[str] = None,
+    **kwargs: Any,
+) -> Tuple[Dict[str, MaintenanceAdvisory], NetworkMaintenanceSummary]:
+    """Generate predictive maintenance advisories across sensor fleet and aggregate network summary.
+
+    Supports both keyword calls and legacy positional calls:
+    (suspect_sensor, health_reports, fault_type, confidence_level).
+    """
+    advisor = MaintenanceAdvisor()
+
+    # Support legacy positional call: run_maintenance_advisories(suspect_sensor, health_reports, ...)
+    if isinstance(health_reports, str):
+        suspect_s = health_reports
+        reports = rankings if isinstance(rankings, dict) else kwargs.get("health_reports", {})
+        f_type = investigation_report if isinstance(investigation_report, str) else fault_type
+        c_level = scores_df if isinstance(scores_df, str) else confidence_level
+        advisories = advisor.advise_fleet(
+            suspect_sensor=suspect_s,
+            health_reports=reports,
+            fault_type=f_type,
+            confidence_level=c_level,
+        )
+    else:
+        advisories = advisor.advise_fleet(
+            suspect_sensor=suspect_sensor,
+            health_reports=health_reports or {},
+            fault_type=fault_type,
+            confidence_level=confidence_level,
+            rankings=rankings,
+            investigation_report=investigation_report,
+            scores_df=scores_df,
+            onsets=onsets,
+            **kwargs,
+        )
+
+    summary = advisor.summarize_network_maintenance(advisories)
+    return advisories, summary
+
+
+# -----------------------------------------------------------------------------
+# Global Live IoT Subsystem Singleton Manager
+# -----------------------------------------------------------------------------
+
+def get_global_live_iot_subsystem() -> Dict[str, Any]:
+    """Provide a reliable process-wide singleton for Live IoT ingestion.
+
+    Guarantees that Streamlit reruns, browser refreshes, and mode transitions
+    always reference the exact same connected MQTT manager, Paho network loop,
+    thread-safe message queue, and sensor buffer instances.
+    """
+    import streamlit as st
+    from faultmesh.ingestion import (
+        LiveTelemetryManager,
+        DataValidator,
+        MQTTClientManager,
+        GatewaySimulator,
+    )
+
+    @st.cache_resource
+    def _create_singleton() -> Dict[str, Any]:
+        validator = DataValidator()
+        telem_mgr = LiveTelemetryManager()
+        mqtt_mgr = MQTTClientManager(
+            validator=validator,
+            telemetry_manager=telem_mgr,
+        )
+        gw_sim = GatewaySimulator(
+            broker_host=mqtt_mgr.config.host,
+            broker_port=mqtt_mgr.config.port,
+        )
+        return {
+            "validator": validator,
+            "telem_mgr": telem_mgr,
+            "mqtt_mgr": mqtt_mgr,
+            "gw_sim": gw_sim,
+        }
+
+    return _create_singleton()
+
+

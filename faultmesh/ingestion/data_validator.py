@@ -251,8 +251,21 @@ class DataValidator:
 
         # 2. Extract and check sensor_id
         raw_sensor_id = payload.get("sensor_id") or payload.get("sensor") or payload.get("id")
+        topic_sensor = self._extract_sensor_from_topic(topic)
+
+        # Reject conflicting sensor IDs between payload and topic path
+        if raw_sensor_id and topic_sensor:
+            candidate_id = str(raw_sensor_id).strip().upper()
+            if candidate_id in SUPPORTED_SENSORS and candidate_id != topic_sensor:
+                return self._record_error(
+                    "CONFLICTING_SENSOR_ID",
+                    f"Payload sensor ID '{raw_sensor_id}' conflicts with MQTT topic sensor '{topic_sensor}'",
+                    raw_preview,
+                    topic=topic,
+                )
+
         if not raw_sensor_id and topic:
-            raw_sensor_id = self._extract_sensor_from_topic(topic)
+            raw_sensor_id = topic_sensor
 
         if not raw_sensor_id:
             return self._record_error("MISSING_SENSOR_ID", "Missing required field 'sensor_id' (and not inferrable from topic)", raw_preview, topic=topic)

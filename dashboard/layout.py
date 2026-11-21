@@ -24,6 +24,7 @@ from dashboard.components import (
     render_executive_reports_tab,
     render_live_comm_stats,
     render_live_sensor_cards,
+    render_live_diagnostic_transparency_table,
     render_calibration_panel,
 )
 from dashboard.utils import SimConfig, SENSORS
@@ -357,6 +358,8 @@ def build_localization(
     st_ctx: Any,
     rankings: Optional[List[Tuple[str, float, Dict[str, Any]]]],
     onsets: Optional[Dict[str, Optional[int]]] = None,
+    diagnosis_status: Optional[str] = None,
+    primary_suspect: Optional[str] = None,
 ) -> None:
     """Build Section 6: Root-Cause Localization rankings and explanations."""
     st_ctx.subheader("Graph-Based Root-Cause Localization Rankings")
@@ -366,7 +369,7 @@ def build_localization(
         "The algorithm rewards early alarms and strong delayed propagation across neighboring peers."
     )
 
-    render_localization_table(st_ctx, rankings)
+    render_localization_table(st_ctx, rankings, diagnosis_status=diagnosis_status, primary_suspect=primary_suspect)
 
 
 def build_benchmark_evaluation(
@@ -729,6 +732,10 @@ def _build_live_iot_view(
     analysis_res = telem_mgr.process_live_analysis(benchmark=benchmark)
     is_calibrated = (analysis_res.get("status") == "success")
 
+    # Render Live Diagnostic Transparency Table
+    sensor_diagnostics = analysis_res.get("sensor_diagnostics") if is_calibrated else telem_mgr.get_sensor_diagnostics()
+    render_live_diagnostic_transparency_table(st_ctx, sensor_diagnostics)
+
     readings_df = telem_mgr.get_synchronized_dataframe()
     scores_df = analysis_res.get("scores") if is_calibrated else None
     onsets = analysis_res.get("onsets") if is_calibrated else None
@@ -780,7 +787,15 @@ def _build_live_iot_view(
     # Tab 3: Root-Cause Localization
     with tabs[3]:
         if is_calibrated:
-            build_localization(st_ctx, rankings, onsets=onsets)
+            diag_status = analysis_res.get("fault_diagnosis_status")
+            primary_suspect = analysis_res.get("primary_suspect")
+            build_localization(
+                st_ctx,
+                rankings,
+                onsets=onsets,
+                diagnosis_status=diag_status,
+                primary_suspect=primary_suspect,
+            )
         else:
             st_ctx.info("Localization Suspended: Awaiting confirmed baseline calibration.")
 

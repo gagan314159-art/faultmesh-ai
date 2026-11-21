@@ -362,19 +362,32 @@ def render_network_graph(
 def render_localization_table(
     st: Any,
     rankings: Optional[List[Tuple[str, float, Dict[str, Any]]]],
+    diagnosis_status: Optional[str] = None,
+    primary_suspect: Optional[str] = None,
 ) -> None:
     """Display root-cause suspect rankings, composite scores, and diagnostic explanations.
 
     Args:
         st: Streamlit module or container.
         rankings: Ranked suspect tuples from FaultLocalizer.
+        diagnosis_status: Optional diagnostic state ('NORMAL', 'UNCERTAIN', 'CONFIRMED').
+        primary_suspect: Optional confirmed initiating root-cause sensor ID.
     """
     if not rankings:
         st.info("No localization diagnosis available.")
         return
 
     top_sensor, top_score, top_bd = rankings[0]
-    st.success(f"**Primary Root Cause Identified:** Sensor **{top_sensor}** (Composite Score: **{top_score:.4f}**)")
+    has_alarms = any(bd.get("onset") is not None for _, _, bd in rankings)
+    max_own = max(bd.get("own_anomaly", 0.0) for _, _, bd in rankings)
+
+    if diagnosis_status == "NORMAL" or (diagnosis_status is None and not has_alarms and max_own < 0.50 and top_score < 0.40):
+        st.info("✅ **Nominal Mesh Condition:** All sensors operating within calibrated normal limits. No active fault detected.")
+    elif diagnosis_status == "UNCERTAIN" or (diagnosis_status is None and not has_alarms and max_own < 0.60):
+        st.warning("⚠️ **Root Cause Uncertain:** Mildly elevated readings detected, but temporal or propagation evidence is insufficient to isolate a definitive root cause.")
+    else:
+        suspect = primary_suspect or top_sensor
+        st.success(f"🎯 **Primary Root Cause Identified:** Sensor **{suspect}** (Composite Score: **{top_score:.4f}**)")
 
     table_data = []
     for rank, (sensor, composite, breakdown) in enumerate(rankings, start=1):
@@ -1390,6 +1403,41 @@ def render_live_sensor_cards(
                 delta=delta_str,
                 delta_color=delta_color,
             )
+
+
+def render_live_diagnostic_transparency_table(
+    st: Any,
+    sensor_diagnostics: Dict[str, Dict[str, Any]],
+) -> None:
+    """Render comprehensive diagnostic transparency table for all five industrial sensors."""
+    if not sensor_diagnostics:
+        return
+
+    st.markdown("#### Real-Time Sensor Diagnostic Transparency")
+    st.caption("Live health, calibration, anomaly state, and root-cause classification per sensor.")
+
+    rows = []
+    for s, diag in sensor_diagnostics.items():
+        val = diag.get("latest_value")
+        unit = diag.get("unit", "")
+        val_str = f"{val:.2f} {unit}" if val is not None else "No data"
+        rows.append({
+            "Sensor": f"{s} ({diag.get('name', s)})",
+            "Latest Value": val_str,
+            "Timestamp": diag.get("timestamp", "N/A"),
+            "Valid Readings": diag.get("valid_count", 0),
+            "Rejected": diag.get("rejected_count", 0),
+            "Calibration": diag.get("calibration_status", "Uncalibrated"),
+            "Sufficiency": diag.get("data_sufficiency", "Pending"),
+            "Anomaly Score": f"{diag.get('anomaly_score', 0.0):.3f}",
+            "Anomaly Status": diag.get("anomaly_status", "Normal"),
+            "Health Score": f"{diag.get('health_score', 100.0):.1f} ({diag.get('health_status', 'Healthy')})",
+            "Root-Cause State": diag.get("root_cause_status", "Normal"),
+            "Diagnostic Reason": diag.get("diagnostic_reason", ""),
+        })
+
+    df_diag = pd.DataFrame(rows)
+    st.dataframe(df_diag, use_container_width=True, hide_index=True)
 
 
 def render_calibration_panel(

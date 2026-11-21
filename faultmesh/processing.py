@@ -10,20 +10,28 @@ import numpy as np
 import pandas as pd
 
 
-def add_features(df: pd.DataFrame, window: int = 10) -> pd.DataFrame:
+def add_features(
+    df: pd.DataFrame,
+    window: int = 10,
+    baseline_stats: Optional[Dict[str, Dict[str, float]]] = None,
+) -> pd.DataFrame:
     """Calculate rolling statistics and standardized features for every sensor.
 
     For each sensor in the DataFrame (e.g. S1, S2, S3, S4, S5), computes:
         1. Rolling mean: Local moving average across `window` steps (min_periods=1).
         2. Rolling standard deviation: Local volatility across `window` steps.
         3. First difference: Consecutive sample delta (x_t - x_{t-1}), filled with 0.0 at t=0.
-        4. Z-score: Standardized deviation relative to the first 100 normal samples:
+        4. Z-score: Standardized deviation relative to calibrated baseline statistics
+                    (or the first 100 normal samples when baseline_stats is None):
                     Z = (x_t - baseline_mean) / baseline_std.
                     Safe against division-by-zero (clips baseline_std to >= 1e-6).
 
     Args:
         df: Input DataFrame containing 'time' and sensor reading columns.
         window: Size of the rolling calculation window (default: 10).
+        baseline_stats: Optional dictionary mapping sensor ID to {'mean': float, 'std': float}.
+                        When provided, guarantees that live streaming telemetry is evaluated
+                        strictly against the verified normal baseline without contamination.
 
     Returns:
         New pandas DataFrame containing original time and sensor readings, augmented with
@@ -47,10 +55,14 @@ def add_features(df: pd.DataFrame, window: int = 10) -> pd.DataFrame:
         # 3. First difference between consecutive readings
         res[f"{sensor}_diff"] = res[sensor].diff().fillna(0.0)
 
-        # 4. Z-score based on the first 100 normal baseline samples
-        baseline_slice = res[sensor].iloc[:100]
-        base_mean = float(baseline_slice.mean()) if len(baseline_slice) > 0 else float(res[sensor].mean())
-        base_std = float(baseline_slice.std()) if len(baseline_slice) > 1 else float(res[sensor].std())
+        # 4. Z-score: use calibrated baseline stats if provided, fallback to first 100 rows
+        if baseline_stats and sensor in baseline_stats:
+            base_mean = float(baseline_stats[sensor]["mean"])
+            base_std = float(baseline_stats[sensor]["std"])
+        else:
+            baseline_slice = res[sensor].iloc[:100]
+            base_mean = float(baseline_slice.mean()) if len(baseline_slice) > 0 else float(res[sensor].mean())
+            base_std = float(baseline_slice.std()) if len(baseline_slice) > 1 else float(res[sensor].std())
 
         # Safe division guard against zero or NaN standard deviation
         if np.isnan(base_std) or base_std < 1e-6:
@@ -111,4 +123,4 @@ class FeatureProcessor:
 
     def extract_features(self, df: pd.DataFrame, sensor_cols: Optional[List[str]] = None) -> pd.DataFrame:
         """Extract complete set of detection features."""
-        return add_features(df, window=self.window_size)
+        return add_features(df, window=self.window_size, baseline_stats=self.baseline_stats or None)

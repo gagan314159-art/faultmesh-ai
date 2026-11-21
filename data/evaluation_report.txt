@@ -1,0 +1,29 @@
+FaultMesh AI — Systematic 75-Scenario Evaluation Benchmark Report
+======================================================================
+
+Total Scenarios Evaluated:    75
+Top-1 Correct / Total:        75 / 75
+Top-2 Correct / Total:        75 / 75
+Overall Top-1 Accuracy:       100.00%
+Overall Top-2 Accuracy:       100.00%
+Injected Detection Rate:      100.00%
+Successful Scenarios:         75
+Failed Scenarios:             0
+
+--------------------------------------------------
+ACCURACY BY FAULT TYPE:
+--------------------------------------------------
+  * drift   : Top-1 = 100.00% (25/25), Top-2 = 100.00%
+  * spike   : Top-1 = 100.00% (25/25), Top-2 = 100.00%
+  * stuck   : Top-1 = 100.00% (25/25), Top-2 = 100.00%
+
+--------------------------------------------------
+ACCURACY BY INJECTED SENSOR:
+--------------------------------------------------
+  * S1      : Top-1 = 100.00% (15/15), Top-2 = 100.00%
+  * S2      : Top-1 = 100.00% (15/15), Top-2 = 100.00%
+  * S3      : Top-1 = 100.00% (15/15), Top-2 = 100.00%
+  * S4      : Top-1 = 100.00% (15/15), Top-2 = 100.00%
+  * S5      : Top-1 = 100.00% (15/15), Top-2 = 100.00%
+
+Zero failures across all 75 benchmark scenarios.

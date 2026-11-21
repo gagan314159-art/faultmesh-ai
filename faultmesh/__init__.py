@@ -10,7 +10,7 @@ This package provides modules for:
 - SQLite persistence for sensor readings, alerts, and evaluation reports.
 """
 
-__version__ = "0.1.0"
+__version__ = "2.0.0"
 __author__ = "FaultMesh AI Team"
 
 from faultmesh.simulator import SensorSimulator
@@ -20,6 +20,24 @@ from faultmesh.graph import SensorNetworkGraph
 from faultmesh.localizer import FaultLocalizer
 from faultmesh.pipeline import FaultMeshPipeline
 from faultmesh.storage import StorageManager
+from faultmesh.explainer import FaultExplainer
+from faultmesh.health import SensorHealthMonitor, SensorHealthRecord, NetworkHealthSummary
+from faultmesh.maintenance import MaintenanceAdvisor
+from faultmesh.reporting import (
+    ExecutiveReporter,
+    build_investigation_summary,
+    export_summary_csv,
+    generate_pdf_report,
+)
+from faultmesh.ingestion import (
+    DataValidator,
+    DataMapper,
+    TelemetryPoint,
+    LiveTelemetryManager,
+    MQTTClientManager,
+    MQTTConnectionConfig,
+    GatewaySimulator,
+)
 
 __all__ = [
     "SensorSimulator",
@@ -29,4 +47,20 @@ __all__ = [
     "FaultLocalizer",
     "FaultMeshPipeline",
     "StorageManager",
+    "FaultExplainer",
+    "SensorHealthMonitor",
+    "SensorHealthRecord",
+    "NetworkHealthSummary",
+    "MaintenanceAdvisor",
+    "ExecutiveReporter",
+    "build_investigation_summary",
+    "export_summary_csv",
+    "generate_pdf_report",
+    "DataValidator",
+    "DataMapper",
+    "TelemetryPoint",
+    "LiveTelemetryManager",
+    "MQTTClientManager",
+    "MQTTConnectionConfig",
+    "GatewaySimulator",
 ]

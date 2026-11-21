@@ -314,8 +314,11 @@ def build_anomaly_detection(
     st_ctx: Any,
     scores: Optional[pd.DataFrame],
     onsets: Optional[Dict[str, Optional[int]]],
+    latest_readings: Optional[Dict[str, Dict[str, Any]]] = None,
+    sensor_diagnostics: Optional[Dict[str, Dict[str, Any]]] = None,
+    readings_df: Optional[pd.DataFrame] = None,
 ) -> None:
-    """Build Section 5: Anomaly Detection evaluation and onset timing."""
+    """Build Section 5: Anomaly Detection evaluation and multi-sensor alarm monitoring."""
     st_ctx.subheader("Anomaly Detection & Alarm Onset Timing")
 
     st_ctx.markdown(
@@ -323,35 +326,107 @@ def build_anomaly_detection(
         "Isolation Forest models and standardized Z-scores. Alarms require 3 consecutive readings above threshold 0.60."
     )
 
-    if not onsets:
-        st_ctx.info("No anomaly onset data available. Run simulation to execute detector.")
-        return
-
-    # Onset Status Table
-    onset_rows = []
-    valid_onsets = [t for t in onsets.values() if t is not None]
+    valid_onsets = [t for t in (onsets.values() if onsets else []) if t is not None]
     earliest_t = min(valid_onsets) if valid_onsets else None
 
+    # Determine data sufficiency
+    n_samples = len(readings_df) if readings_df is not None else (len(scores) if scores is not None else 0)
+
+    rows = []
     for sensor in SENSORS:
-        t = onsets.get(sensor)
+        diag = sensor_diagnostics.get(sensor, {}) if sensor_diagnostics else {}
+        r_info = latest_readings.get(sensor, {}) if latest_readings else {}
+
+        # 1. Sensor ID & Name
+        s_name = diag.get("name") or SENSOR_DEFINITIONS.get(sensor, {}).get("name", sensor)
+        s_id_display = f"{sensor} ({s_name})"
+
+        # 2. Latest Reading and Unit
+        val = diag.get("latest_value")
+        if val is None:
+            val = r_info.get("value")
+        if val is None and readings_df is not None and not readings_df.empty and sensor in readings_df.columns:
+            val = float(readings_df[sensor].iloc[-1])
+        unit = diag.get("unit") or r_info.get("unit") or STANDARD_UNITS.get(sensor, "")
+        val_display = f"{val:.2f} {unit}" if isinstance(val, (int, float)) else "Awaiting Data"
+
+        # 3. Anomaly Score
+        score = diag.get("anomaly_score")
+        if score is None and scores is not None and not scores.empty and sensor in scores.columns:
+            score = float(scores[sensor].iloc[-1])
+        score_val = float(score) if isinstance(score, (int, float)) else 0.0
+        score_display = f"{score_val:.4f}"
+
+        # 4. Detection Status
+        t = onsets.get(sensor) if onsets else None
         if t is not None:
             if t == earliest_t:
-                status = "EARLIEST ALARM"
+                status = f"🚨 EARLIEST ALARM (Onset t={t})"
             else:
                 delay = t - earliest_t if earliest_t is not None else 0
-                status = f"Coupled Alarm (+{delay} steps delayed)"
-            onset_str = f"t = {t}"
+                status = f"⚠️ Coupled Alarm (+{delay} delayed, t={t})"
+        elif score_val >= 0.60:
+            status = f"⚡ Elevated Transient (Score {score_val:.3f} > 0.60)"
+        elif n_samples < 10 and not val:
+            status = "⏳ Insufficient Data"
         else:
-            status = "Nominal (No Alarm Triggered)"
-            onset_str = "None"
+            status = "✅ Nominal (No Alarm Triggered)"
 
-        onset_rows.append({
-            "Sensor ID": sensor,
-            "Confirmed Detection Onset": onset_str,
+        # 5. Detection Timestamp
+        ts_onset = f"t = {t}" if t is not None else "None (Nominal)"
+        ts_live = diag.get("timestamp") or r_info.get("timestamp")
+        if ts_live and ts_live != "N/A":
+            ts_display = f"{ts_onset} ({ts_live})"
+        else:
+            ts_display = ts_onset
+
+        # 6. Data Sufficiency Status
+        sufficiency = diag.get("data_sufficiency")
+        if not sufficiency:
+            sufficiency = f"Sufficient ({n_samples} samples)" if n_samples >= 15 else f"Collecting ({n_samples}/15 samples)"
+
+        rows.append({
+            "Sensor ID": s_id_display,
+            "Latest Sensor Reading & Unit": val_display,
+            "Anomaly Score": score_display,
             "Detection Status": status,
+            "Detection Timestamp": ts_display,
+            "Data Sufficiency Status": sufficiency,
         })
 
-    st_ctx.dataframe(pd.DataFrame(onset_rows), use_container_width=True, hide_index=True)
+    st_ctx.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    # Anomaly Scores Timeseries Visualization
+    if scores is not None and not scores.empty and any(s in scores.columns for s in SENSORS):
+        st_ctx.markdown("#### Calibrated Anomaly Scores Over Time (Cutoff: 0.60)")
+        import plotly.graph_objects as go
+        fig = go.Figure()
+        time_axis = scores["time"] if "time" in scores.columns else (scores["timestep"] if "timestep" in scores.columns else list(range(len(scores))))
+        colors = {"S1": "#2563EB", "S2": "#7C3AED", "S3": "#DC2626", "S4": "#D97706", "S5": "#059669"}
+        for s in SENSORS:
+            if s in scores.columns:
+                fig.add_trace(go.Scatter(
+                    x=time_axis,
+                    y=scores[s],
+                    mode="lines",
+                    name=f"{s} ({SENSOR_DEFINITIONS.get(s, {}).get('name', s)})",
+                    line=dict(color=colors.get(s, "#888888"), width=2),
+                ))
+        fig.add_hline(
+            y=0.60,
+            line_dash="dash",
+            line_color="rgba(220, 38, 38, 0.85)",
+            annotation_text="Alarm Cutoff (0.60)",
+            annotation_position="top right",
+        )
+        fig.update_layout(
+            margin=dict(l=20, r=20, t=30, b=20),
+            height=300,
+            yaxis=dict(range=[0.0, 1.05], title="Anomaly Score [0, 1]"),
+            xaxis=dict(title="Sample Step"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st_ctx.plotly_chart(fig, use_container_width=True)
 
 
 def build_localization(
@@ -611,13 +686,6 @@ def sidebar_live_iot_controls(
         help="Select fault scenario to inject into the live publisher stream.",
     )
 
-    fault_sensor = st_ctx.sidebar.selectbox(
-        "Fault Target Sensor",
-        options=SENSORS,
-        index=SENSORS.index(gw_status.get("fault_sensor", "S3")),
-        disabled=(scenario == "normal"),
-    )
-
     mag_ratio = st_ctx.sidebar.slider(
         "Fault Magnitude Ratio",
         min_value=0.1,
@@ -638,7 +706,7 @@ def sidebar_live_iot_controls(
 
     gw_sim.set_scenario(
         scenario=scenario,
-        fault_sensor=fault_sensor,
+        fault_sensor=gw_status.get("fault_sensor", "S3"),
         magnitude_ratio=mag_ratio,
         fault_start_step=20,
         spike_duration=10,
@@ -772,32 +840,30 @@ def _build_live_iot_view(
 
     # Tab 2: Anomaly Detection
     with tabs[2]:
-        if is_calibrated:
-            build_anomaly_detection(st_ctx, scores_df, onsets)
-        else:
-            st_ctx.info(f"Anomaly Detection Suspended: {analysis_res.get('message', 'Baseline calibration required.')}")
+        build_anomaly_detection(
+            st_ctx=st_ctx,
+            scores=scores_df,
+            onsets=onsets,
+            latest_readings=latest_readings,
+            sensor_diagnostics=sensor_diagnostics,
+            readings_df=readings_df,
+        )
 
     # Tab 3: Root-Cause Localization
     with tabs[3]:
-        if is_calibrated:
-            diag_status = analysis_res.get("fault_diagnosis_status")
-            primary_suspect = analysis_res.get("primary_suspect")
-            build_localization(
-                st_ctx,
-                rankings,
-                onsets=onsets,
-                diagnosis_status=diag_status,
-                primary_suspect=primary_suspect,
-            )
-        else:
-            st_ctx.info("Localization Suspended: Awaiting confirmed baseline calibration.")
+        diag_status = analysis_res.get("fault_diagnosis_status", "NORMAL")
+        primary_suspect = analysis_res.get("primary_suspect")
+        build_localization(
+            st_ctx,
+            rankings,
+            onsets=onsets,
+            diagnosis_status=diag_status,
+            primary_suspect=primary_suspect,
+        )
 
     # Tab 4: Explainable Investigation
     with tabs[4]:
-        if is_calibrated:
-            render_explainable_investigation(st_ctx, inv_report, rankings)
-        else:
-            st_ctx.info("Investigation Engine Suspended: Calibration required.")
+        render_explainable_investigation(st_ctx, inv_report, rankings)
 
     # Tab 5: Sensor Health Center
     with tabs[5]:

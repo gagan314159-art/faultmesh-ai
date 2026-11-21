@@ -79,6 +79,7 @@ class AnomalyDetector:
         random_state: int = 42,
         n_estimators: int = 100,
         contamination: float = 0.01,
+        baseline_stats: Optional[Dict[str, Dict[str, float]]] = None,
     ) -> None:
         """Initialize the anomaly detector.
 
@@ -88,12 +89,14 @@ class AnomalyDetector:
             random_state: Seed for random partitioning trees (default: 42).
             n_estimators: Number of isolation trees per sensor model (default: 100).
             contamination: Expected fraction of outliers in training set (default: 0.01).
+            baseline_stats: Optional pre-calibrated baseline mean and std per sensor.
         """
         self.threshold = threshold
         self.consecutive_required = consecutive_required
         self.random_state = random_state
         self.n_estimators = n_estimators
         self.contamination = contamination
+        self.baseline_stats = baseline_stats
 
         self.models: Dict[str, IsolationForest] = {}
         self.feature_names: Dict[str, List[str]] = {}
@@ -106,14 +109,26 @@ class AnomalyDetector:
             normal_df: DataFrame containing sensor readings or pre-computed features.
                        Uses the first 100 rows for model fitting.
         """
-        # Ensure engineered features are present
+        # Calculate and lock baseline stats if not already provided
+        if self.baseline_stats is None:
+            self.baseline_stats = {}
+            for s in self.sensors:
+                if s in normal_df.columns:
+                    b_slice = normal_df[s].iloc[: min(len(normal_df), 100)]
+                    std_val = float(b_slice.std())
+                    self.baseline_stats[s] = {
+                        "mean": float(b_slice.mean()),
+                        "std": std_val if (not np.isnan(std_val) and std_val > 1e-4) else 1.0,
+                    }
+
+        # Ensure engineered features are present using locked baseline stats
         if not any(f"{s}_roll_mean" in normal_df.columns for s in self.sensors):
-            feats_df = add_features(normal_df)
+            feats_df = add_features(normal_df, baseline_stats=self.baseline_stats)
         else:
             feats_df = normal_df
 
         # Restrict training strictly to first 100 normal baseline samples
-        baseline_train = feats_df.iloc[:100]
+        baseline_train = feats_df.iloc[: min(len(feats_df), 100)]
 
         for sensor in self.sensors:
             cols = [
@@ -170,9 +185,9 @@ class AnomalyDetector:
         Returns:
             DataFrame with 'time' column and sensor anomaly scores in [0, 1].
         """
-        # Ensure engineered features are available
+        # Ensure engineered features are available using calibrated baseline stats
         if not any(f"{s}_roll_mean" in df.columns for s in self.sensors):
-            feats_df = add_features(df)
+            feats_df = add_features(df, baseline_stats=self.baseline_stats)
         else:
             feats_df = df
 

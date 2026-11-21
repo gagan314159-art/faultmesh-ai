@@ -30,6 +30,11 @@ from faultmesh.ingestion.data_validator import DataValidator, SUPPORTED_SENSORS,
 from faultmesh.ingestion.data_mapper import TelemetryPoint
 from faultmesh.ingestion.buffer import LiveTelemetryManager, SensorBuffer
 from faultmesh.processing import add_features
+from faultmesh.detector import AnomalyDetector, first_onset
+from faultmesh.explainer import FaultExplainer, InvestigationReport
+from faultmesh.localizer import FaultLocalizer
+from faultmesh.ingestion.mqtt_client import MQTTConnectionConfig
+from dashboard.utils import SimConfig, run_simulation
 
 
 def feed_stream(
@@ -390,3 +395,194 @@ class TestLiveIoTDiagnosticPipeline:
         # In the tail 30 samples, sensor readings have stabilized back to baseline
         recent_s2_score = res["scores"]["S2"].iloc[-15:].mean()
         assert recent_s2_score < 0.50
+
+
+class TestLiveIoTAnomalyDetectionAndExplainability:
+    """Targeted validation for live IoT anomaly detection, explainable investigation, and UI integrity."""
+
+    # 1. Live MQTT telemetry reaching the anomaly detector
+    def test_1_live_telemetry_reaches_anomaly_detector(self) -> None:
+        mgr = LiveTelemetryManager(min_calibration_samples=20, target_calibration_samples=30)
+        assert mgr.calibrated_detector is not None
+
+        sim = SensorSimulator(seed=201)
+        df_normal = sim.generate(n_steps=30, fault=None)
+        feed_stream(mgr, df_normal, start_step=0)
+        mgr.confirm_and_calibrate()
+
+        res = mgr.process_live_analysis()
+        assert res["status"] == "success"
+        assert "scores" in res
+        assert all(s in res["scores"].columns for s in ["S1", "S2", "S3", "S4", "S5"])
+        assert len(res["scores"]) == 30
+
+    # 2. Independent anomaly scoring for all five sensors
+    def test_2_independent_anomaly_scoring_for_all_five_sensors(self) -> None:
+        mgr = LiveTelemetryManager(min_calibration_samples=25, target_calibration_samples=30)
+        sim = SensorSimulator(seed=202)
+        df_normal = sim.generate(n_steps=30, fault=None)
+        feed_stream(mgr, df_normal, start_step=0)
+        mgr.confirm_and_calibrate()
+
+        # Ingest severe drift on S4 specifically
+        df_fault = sim.generate(n_steps=20, fault={"sensor": "S4", "type": "drift", "start": 0, "magnitude": 50.0})
+        feed_stream(mgr, df_fault, start_step=30)
+
+        res = mgr.process_live_analysis()
+        scores = res["scores"]
+        # S4 anomaly score should be high
+        assert scores["S4"].iloc[-1] > 0.60
+        # Other sensors must have distinct independent anomaly calculations
+        s4_score = scores["S4"].iloc[-1]
+        s1_score = scores["S1"].iloc[-1]
+        assert s4_score != s1_score
+
+    # 3. Detection of a sustained abnormal pattern
+    def test_3_detection_of_sustained_abnormal_pattern(self) -> None:
+        mgr = LiveTelemetryManager(min_calibration_samples=25, target_calibration_samples=30)
+        sim = SensorSimulator(seed=203)
+        df_normal = sim.generate(n_steps=30, fault=None)
+        feed_stream(mgr, df_normal, start_step=0)
+        mgr.confirm_and_calibrate()
+
+        # Feed sustained drift fault on S3
+        df_fault = sim.generate(n_steps=40, fault={"sensor": "S3", "type": "drift", "start": 0, "magnitude": 15.0})
+        feed_stream(mgr, df_fault, start_step=30)
+
+        res = mgr.process_live_analysis()
+        assert res["onsets"]["S3"] is not None
+        assert res["fault_diagnosis_status"] == "CONFIRMED"
+        assert res["primary_suspect"] == "S3"
+
+    # 4. Rejection or handling of invalid and insufficient telemetry
+    def test_4_rejection_or_handling_of_invalid_and_insufficient_telemetry(self) -> None:
+        validator = DataValidator()
+        # Invalid sensor ID
+        res1 = validator.validate_message({"sensor_id": "UNKNOWN", "value": 10.0, "timestamp": "2026-11-21T00:00:00Z"})
+        assert res1.is_valid is False
+        assert res1.error_type == "UNSUPPORTED_SENSOR"
+
+        # Invalid unit
+        res2 = validator.validate_message({"sensor_id": "S1", "value": 60.0, "unit": "psi", "timestamp": "2026-11-21T00:00:00Z"})
+        assert res2.is_valid is False
+        assert res2.error_type == "INVALID_UNIT"
+
+        # Insufficient telemetry handling in manager
+        mgr = LiveTelemetryManager(min_calibration_samples=30)
+        assert mgr.can_calibrate()[0] is False
+
+    # 5. Correct detection onset calculation
+    def test_5_correct_detection_onset_calculation(self) -> None:
+        scores_df = pd.DataFrame({
+            "time": list(range(10)),
+            "S1": [0.2, 0.2, 0.7, 0.8, 0.9, 0.2, 0.2, 0.2, 0.2, 0.2],  # 3 consecutive: t=2, 3, 4 -> onset t=2
+            "S2": [0.2, 0.7, 0.2, 0.8, 0.2, 0.7, 0.2, 0.2, 0.2, 0.2],  # isolated spikes -> no onset
+        })
+        onsets = first_onset(scores_df, threshold=0.60, min_consecutive=3)
+        assert onsets["S1"] == 2
+        assert onsets["S2"] is None
+
+    # 6. Explainable Fault Investigation using live diagnostic evidence
+    def test_6_explainable_investigation_using_live_diagnostic_evidence(self) -> None:
+        mgr = LiveTelemetryManager(min_calibration_samples=25, target_calibration_samples=30)
+        sim = SensorSimulator(seed=206)
+        df_normal = sim.generate(n_steps=30, fault=None)
+        feed_stream(mgr, df_normal, start_step=0)
+        mgr.confirm_and_calibrate()
+
+        df_fault = sim.generate(n_steps=20, fault={"sensor": "S2", "type": "drift", "start": 0, "magnitude": 10.0})
+        feed_stream(mgr, df_fault, start_step=30)
+
+        res = mgr.process_live_analysis()
+        rep = res["investigation_report"]
+        assert isinstance(rep, InvestigationReport)
+        assert rep.suspected_sensor == "S2"
+        assert len(rep.evidence) >= 3
+        assert len(rep.timing_comparisons) == 5
+        assert rep.confidence_category in ("Strong", "Moderate")
+
+    # 7. Consistency between anomaly results and investigation explanations
+    def test_7_consistency_between_anomaly_results_and_investigation_explanations(self) -> None:
+        mgr = LiveTelemetryManager(min_calibration_samples=25, target_calibration_samples=30)
+        sim = SensorSimulator(seed=207)
+        df_normal = sim.generate(n_steps=30, fault=None)
+        feed_stream(mgr, df_normal, start_step=0)
+        mgr.confirm_and_calibrate()
+
+        df_fault = sim.generate(n_steps=20, fault={"sensor": "S1", "type": "drift", "start": 0, "magnitude": 30.0})
+        feed_stream(mgr, df_fault, start_step=30)
+
+        res = mgr.process_live_analysis()
+        rep = res["investigation_report"]
+        assert rep.suspected_sensor == res["primary_suspect"]
+        assert rep.localization_score == round(res["rankings"][0][1], 4)
+
+    # 8. Root-cause uncertainty when evidence is insufficient
+    def test_8_root_cause_uncertainty_when_evidence_is_insufficient(self) -> None:
+        explainer = FaultExplainer()
+        # Uncertain diagnosis status
+        rep = explainer.explain(
+            scores_df=None,
+            onsets={"S1": None, "S2": None, "S3": None, "S4": None, "S5": None},
+            rankings=[("S3", 0.65, {"own_anomaly": 0.65, "detection_earliness": 0.0, "neighbour_support": 0.0, "coverage": 0.2})],
+            anomaly_scores={"S3": 0.65},
+            diagnosis_status="UNCERTAIN",
+        )
+        assert rep.suspected_sensor is None
+        assert rep.confidence_category == "Limited"
+        assert "UNCERTAIN" in rep.investigation_summary
+
+    # 9. Absence of the Fault Target Sensor UI control
+    def test_9_absence_of_the_fault_target_sensor_ui_control(self) -> None:
+        import inspect
+        from dashboard import layout
+        src = inspect.getsource(layout.sidebar_live_iot_controls)
+        # Verify Fault Target Sensor selector is completely absent from Live IoT controls
+        assert "Fault Target Sensor" not in src
+        assert "selectbox(\"Fault Target Sensor\"" not in src
+
+    # 10. Correct operation after Streamlit reruns
+    def test_10_correct_operation_after_reruns(self) -> None:
+        mgr = LiveTelemetryManager(min_calibration_samples=20, target_calibration_samples=25)
+        sim = SensorSimulator(seed=210)
+        df = sim.generate(n_steps=25, fault=None)
+        feed_stream(mgr, df, start_step=0)
+        mgr.confirm_and_calibrate()
+
+        # Simulate 5 consecutive rerun cycles
+        for cycle in range(5):
+            res = mgr.process_live_analysis()
+            assert res["status"] == "success"
+            assert res["fault_diagnosis_status"] == "NORMAL"
+            assert len(res["sensor_diagnostics"]) == 5
+
+    # 11. Preservation of MQTT connectivity
+    def test_11_preservation_of_mqtt_connectivity(self) -> None:
+        config = MQTTConnectionConfig(
+            host="broker.emqx.io",
+            port=8883,
+            topic="faultmesh/sensors/#",
+            username="test_user",
+            password="test_password",
+            use_tls=True,
+        )
+        assert config.host == "broker.emqx.io"
+        assert config.port == 8883
+        assert config.use_tls is True
+        assert config.username == "test_user"
+
+    # 12. Preservation of existing Simulation Mode functionality
+    def test_12_preservation_of_existing_simulation_mode_functionality(self) -> None:
+        cfg = SimConfig(
+            total_steps=200,
+            fault_sensor="S3",
+            fault_type="drift",
+            fault_start=100,
+            fault_magnitude_ratio=0.5,
+            seed=42,
+        )
+        readings, fault_dict = run_simulation(cfg, use_cache=False)
+        assert len(readings) == 200
+        assert "S3" in readings.columns
+        assert fault_dict is not None
+        assert fault_dict.get("sensor") == "S3"

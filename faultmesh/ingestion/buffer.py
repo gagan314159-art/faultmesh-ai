@@ -132,8 +132,8 @@ class LiveTelemetryManager:
         self.calibration_status: str = "uncalibrated"  # "uncalibrated", "calibrating", "calibrated"
         self.calibration_samples_collected: int = 0
         self.calibrated_at: Optional[str] = None
-        self.calibrated_detector: Optional[AnomalyDetector] = None
-        self.baseline_stats: Optional[Dict[str, Dict[str, float]]] = None
+        self.baseline_stats: Optional[Dict[str, Dict[str, float]]] = self._get_default_baseline_stats()
+        self.calibrated_detector: Optional[AnomalyDetector] = self._init_default_detector()
         self.operator_confirmed: bool = False
 
         # Diagnostic Transparency & State Tracking
@@ -153,6 +153,35 @@ class LiveTelemetryManager:
         self.latest_advisories: Optional[Dict[str, Any]] = None
         self.latest_maintenance_summary: Optional[NetworkMaintenanceSummary] = None
         self.latest_executive_summary: Optional[Dict[str, Any]] = None
+
+    def _get_default_baseline_stats(self) -> Dict[str, Dict[str, float]]:
+        """Return physics-grounded nominal baseline statistics for sensors S1-S5."""
+        return {
+            "S1": {"mean": 60.0, "std": 1.5},
+            "S2": {"mean": 2.0, "std": 0.15},
+            "S3": {"mean": 5.0, "std": 0.25},
+            "S4": {"mean": 100.0, "std": 2.0},
+            "S5": {"mean": 0.5, "std": 0.05},
+        }
+
+    def _init_default_detector(self) -> AnomalyDetector:
+        """Initialize and fit Isolation Forest anomaly detector on nominal physics baselines."""
+        try:
+            from faultmesh.simulator import SensorSimulator
+            base_stats = self._get_default_baseline_stats()
+            sim = SensorSimulator(seed=42)
+            df_nominal = sim.generate(n_steps=120, fault=None)
+            detector = AnomalyDetector(
+                threshold=0.6,
+                consecutive_required=3,
+                random_state=42,
+                baseline_stats=base_stats,
+            )
+            detector.fit(df_nominal)
+            return detector
+        except Exception as ex:
+            logger.warning("Failed to initialize default detector: %s", ex)
+            return AnomalyDetector(threshold=0.6, consecutive_required=3, random_state=42)
 
     def ingest_point(self, point: TelemetryPoint) -> bool:
         """Ingest a validated telemetry point into the appropriate sensor buffer.
@@ -359,8 +388,8 @@ class LiveTelemetryManager:
             self.calibration_status = "uncalibrated"
             self.operator_confirmed = False
             self.calibrated_at = None
-            self.calibrated_detector = None
-            self.baseline_stats = None
+            self.calibrated_detector = self._init_default_detector()
+            self.baseline_stats = self._get_default_baseline_stats()
             self.latest_scores_df = None
             self.latest_onsets = None
             self.latest_rankings = None
@@ -387,11 +416,25 @@ class LiveTelemetryManager:
         """
         with self.lock:
             if not self.operator_confirmed or self.calibrated_detector is None:
+                sensor_diags = self.get_sensor_diagnostics()
+                explainer = FaultExplainer()
+                inv_report = explainer.explain(
+                    scores_df=None,
+                    onsets={s: None for s in SUPPORTED_SENSORS},
+                    rankings=[],
+                    anomaly_scores={s: 0.0 for s in SUPPORTED_SENSORS},
+                    diagnosis_status="NORMAL",
+                )
                 return {
                     "status": "awaiting_calibration",
                     "message": "AI analysis suspended. Telemetry baseline calibration required.",
                     "calibration_status": self.calibration_status,
                     "samples_available": len(self.synchronized_rows),
+                    "sensor_diagnostics": sensor_diags,
+                    "investigation_report": inv_report,
+                    "fault_diagnosis_status": "NORMAL",
+                    "primary_suspect": None,
+                    "diagnosis_summary": "Baseline calibration required before AI diagnostics can execute.",
                 }
 
             if not self.synchronized_rows:
@@ -479,6 +522,8 @@ class LiveTelemetryManager:
                 onsets=onsets,
                 rankings=rankings,
                 anomaly_scores=anomaly_scores,
+                diagnosis_status=fault_diagnosis_status,
+                primary_suspect=primary_suspect,
             )
 
             # 6. Sensor Health Monitoring
@@ -668,6 +713,24 @@ class LiveTelemetryManager:
                     "root_cause_rank": None,
                     "diagnostic_reason": "Baseline calibration required before AI diagnostics can execute." if not self.operator_confirmed else "Operating normally.",
                 }
+
+            # If telemetry is actively streaming, compute provisional scores via baseline detector
+            if len(self.synchronized_rows) >= 10 and self.calibrated_detector is not None:
+                try:
+                    df_prov = pd.DataFrame(self.synchronized_rows)
+                    feats_prov = add_features(df_prov, baseline_stats=self.baseline_stats)
+                    scores_prov = self.calibrated_detector.score(feats_prov)
+                    for s in SUPPORTED_SENSORS:
+                        if s in scores_prov.columns:
+                            sc_val = float(scores_prov[s].iloc[-min(10, len(scores_prov)):].mean())
+                            res[s]["anomaly_score"] = round(sc_val, 4)
+                            if sc_val >= 0.60:
+                                res[s]["anomaly_status"] = "Elevated (Unconfirmed)"
+                            else:
+                                res[s]["anomaly_status"] = "Normal (Provisional)"
+                except Exception:
+                    pass
+
             return res
 
     def clear_all(self) -> None:

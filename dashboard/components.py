@@ -567,8 +567,11 @@ def render_explainable_investigation(
     """
     st.subheader("Explainable Fault Investigation Engine")
 
-    if not investigation_report or not rankings:
-        st.info("Execute a simulation to view explainable investigation diagnostics.")
+    if not investigation_report:
+        st.info(
+            "**Explainable Fault Investigation Engine Active:** "
+            "Awaiting incoming telemetry stream and baseline evaluation to generate causal graph evidence."
+        )
         return
 
     suspect = getattr(investigation_report, "suspected_sensor", None)
@@ -579,8 +582,17 @@ def render_explainable_investigation(
 
     # 1. Suspected Root-Cause Sensor & 2. Confidence Category
     col1, col2, col3, col4 = st.columns(4)
-    suspect_display = f"Sensor {suspect}" if suspect else "None (Nominal)"
-    col1.metric(label="Suspected Root Cause", value=suspect_display, delta="Rank #1")
+    if suspect:
+        suspect_display = f"Sensor {suspect}"
+        delta_rank = "Rank #1 (Suspect)"
+    elif confidence == "Limited":
+        suspect_display = "Root Cause Uncertain"
+        delta_rank = "Ambiguous Cascade"
+    else:
+        suspect_display = "None (Nominal)"
+        delta_rank = "Within Baseline"
+
+    col1.metric(label="Suspected Root Cause", value=suspect_display, delta=delta_rank)
     col2.metric(label="Investigation Confidence", value=confidence, delta="Evidence Strength")
     col3.metric(label="Localization Score", value=f"{loc_score:.4f}", delta="Composite Fusion")
     col4.metric(label="Detection Onset", value=f"t = {onset}" if onset is not None else "None", delta=f"Peak Anomaly: {anom_score:.3f}")

@@ -75,6 +75,8 @@ class FaultExplainer:
         onsets: Optional[Dict[str, Optional[int]]] = None,
         rankings: Optional[List[Tuple[str, float, Dict[str, Any]]]] = None,
         anomaly_scores: Optional[Dict[str, float]] = None,
+        diagnosis_status: Optional[str] = None,
+        primary_suspect: Optional[str] = None,
     ) -> InvestigationReport:
         """Generate explainable investigation report from actual pipeline results.
 
@@ -83,6 +85,8 @@ class FaultExplainer:
             onsets: Optional Dict mapping sensor ID to first alarm onset timestep.
             rankings: Optional sorted list of (sensor_id, composite_score, breakdown_dict).
             anomaly_scores: Optional Dict mapping sensor ID to scalar anomaly score.
+            diagnosis_status: Optional status ("NORMAL", "UNCERTAIN", "CONFIRMED").
+            primary_suspect: Optional verified primary suspect sensor ID.
 
         Returns:
             InvestigationReport containing structured evidence, confidence, and narrative.
@@ -101,12 +105,20 @@ class FaultExplainer:
                 else:
                     resolved_anomaly_scores[s] = 0.0
 
+        # Handle explicit NORMAL status
+        if diagnosis_status == "NORMAL":
+            return self._handle_normal_scenario(nodes, resolved_anomaly_scores)
+
         # Handle empty/missing rankings scenario
         if not rankings:
             return self._handle_unranked_scenario(resolved_anomaly_scores, onsets_clean, nodes)
 
+        # Handle explicit UNCERTAIN status
+        if diagnosis_status == "UNCERTAIN":
+            return self._handle_uncertain_scenario(nodes, resolved_anomaly_scores, onsets_clean, rankings)
+
         # Retrieve highest-ranked suspect
-        suspect_sensor = rankings[0][0]
+        suspect_sensor = primary_suspect or rankings[0][0]
         localization_rank = 1
         localization_score = float(rankings[0][1])
         breakdown = rankings[0][2] if len(rankings[0]) > 2 else {}
@@ -344,6 +356,75 @@ class FaultExplainer:
             ranking_breakdown={
                 k: round(float(v), 4) for k, v in breakdown.items() if isinstance(v, (int, float))
             },
+        )
+
+    def _handle_uncertain_scenario(
+        self,
+        nodes: List[str],
+        anomaly_scores: Dict[str, float],
+        onsets: Dict[str, Optional[int]],
+        rankings: Optional[List[Tuple[str, float, Dict[str, Any]]]] = None,
+    ) -> InvestigationReport:
+        """Handle scenarios where anomalous behavior was observed but root cause cannot be confirmed."""
+        max_score = max(anomaly_scores.values()) if anomaly_scores else 0.0
+        elevated_sensors = [s for s, sc in anomaly_scores.items() if sc >= 0.50]
+        alarmed_sensors = [s for s, t in onsets.items() if t is not None]
+
+        evidence = [
+            f"Sensor network exhibited elevated anomaly scores (peak: {max_score:.3f}).",
+            "Root-cause attribution is uncertain: lack of distinct chronological propagation delay or persistent onset confirmation.",
+        ]
+        if alarmed_sensors:
+            evidence.append(f"Sensors alarming concurrently without decisive cascade: {', '.join(alarmed_sensors)}.")
+        elif elevated_sensors:
+            evidence.append(f"Sensors exhibiting transient or unconfirmed elevated readings: {', '.join(elevated_sensors)}.")
+        else:
+            evidence.append("No sustained onset was confirmed exceeding the 3-consecutive-reading threshold (0.60).")
+
+        top_score = float(rankings[0][1]) if rankings else 0.0
+        summary_text = (
+            "FAULT INVESTIGATION REPORT\n"
+            "==========================\n"
+            "Suspected Root Cause: Root Cause Uncertain\n"
+            "Localization Rank: N/A (Inconclusive)\n"
+            "Detection Onset: None\n"
+            "Peak Anomaly Score: " + f"{max_score:.3f}\n\n"
+            "Observed Evidence:\n"
+            + "\n".join(f"- {ev}" for ev in evidence)
+            + "\n\nInvestigation Conclusion:\n"
+            "Elevated sensor deviations observed across the network mesh, but available causal propagation evidence is insufficient "
+            "to reliably isolate a single primary root cause. Root cause is classified as UNCERTAIN.\n\n"
+            "Confidence Category:\n"
+            "Evidence Strength: Limited (Uncertain root-cause attribution due to concurrent alarms or transient noise)\n\n"
+            "Limitations:\n"
+            "- Multi-sensor ambiguity: When multiple nodes alarm simultaneously, directional causality requires secondary physical inspection."
+        )
+
+        timing_comps = [
+            {
+                "sensor": s,
+                "onset": onsets.get(s),
+                "timing_status": f"Alarm at t={onsets.get(s)}" if onsets.get(s) is not None else "Nominal / Transient",
+                "delay_relative_to_suspect": "N/A",
+                "anomaly_score": round(anomaly_scores.get(s, 0.0), 4),
+            }
+            for s in nodes
+        ]
+
+        return InvestigationReport(
+            suspected_sensor=None,
+            localization_rank=None,
+            localization_score=round(top_score, 4),
+            anomaly_score=round(max_score, 4),
+            detection_onset=None,
+            supporting_sensors=[],
+            evidence=evidence,
+            confidence_category="Limited",
+            investigation_summary=summary_text,
+            limitations=DEFAULT_LIMITATIONS.copy(),
+            timing_comparisons=timing_comps,
+            neighbor_evidence=[],
+            ranking_breakdown={},
         )
 
     def _handle_normal_scenario(

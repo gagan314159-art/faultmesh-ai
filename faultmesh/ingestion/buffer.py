@@ -62,7 +62,7 @@ class SensorBuffer:
         if self.points and point.epoch < self.points[-1].epoch:
             self.out_of_order_count += 1
             # If point is older than the oldest kept sample in rolling window, reject
-            if self.points and point.epoch < self.points[0].epoch:
+            if len(self.points) >= self.max_size and point.epoch < self.points[0].epoch:
                 self.rejected_count += 1
                 return False
             # Insert in sorted chronological order
@@ -113,7 +113,7 @@ class LiveTelemetryManager:
         target_calibration_samples: int = 100,
     ) -> None:
         """Initialize telemetry manager with sensor buffers and calibration state."""
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.max_buffer_size = max_buffer_size
         self.stale_threshold = stale_threshold_seconds
         self.min_calibration_samples = min_calibration_samples
@@ -440,14 +440,15 @@ class LiveTelemetryManager:
             has_confirmed_onset = any(onsets.get(s) is not None for s in sensor_cols)
             max_network_score = max(anomaly_scores.values()) if anomaly_scores else 0.0
 
-            if not has_confirmed_onset and max_network_score < 0.50:
-                fault_diagnosis_status = "NORMAL"
-                primary_suspect = None
-                diagnosis_summary = "All sensors operating within normal baseline boundaries. No active fault detected."
-            elif not has_confirmed_onset and max_network_score < 0.60:
-                fault_diagnosis_status = "UNCERTAIN"
-                primary_suspect = None
-                diagnosis_summary = "Elevated telemetry observed, but persistence is insufficient to confirm a sustained root-cause fault."
+            if not has_confirmed_onset:
+                if max_network_score < 0.50:
+                    fault_diagnosis_status = "NORMAL"
+                    primary_suspect = None
+                    diagnosis_summary = "All sensors operating within normal baseline boundaries. No active fault detected."
+                else:
+                    fault_diagnosis_status = "UNCERTAIN"
+                    primary_suspect = None
+                    diagnosis_summary = "Elevated telemetry or transient noise observed, but persistence is insufficient to confirm a sustained root-cause fault."
             else:
                 top_sensor, top_score, top_bd = rankings[0]
                 # Check for tie with runner-up

@@ -675,15 +675,8 @@ def sidebar_live_iot_controls(
     )
     st_ctx.session_state["auto_refresh_telemetry"] = auto_refresh
 
-    col_ref1, col_ref2 = st_ctx.sidebar.columns(2)
-    with col_ref1:
-        if col_ref1.button("Refresh Telemetry", use_container_width=True):
-            st_ctx.rerun()
-    with col_ref2:
-        if col_ref2.button("Clear Buffers", use_container_width=True):
-            telem_mgr.clear_all()
-            mqtt_mgr.validator.reset_stats()
-            st_ctx.rerun()
+    if st_ctx.sidebar.button("Refresh Telemetry", use_container_width=True):
+        st_ctx.rerun()
 
 
 def _build_live_iot_view(

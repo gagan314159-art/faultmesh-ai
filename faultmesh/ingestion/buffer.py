@@ -157,11 +157,11 @@ class LiveTelemetryManager:
     def _get_default_baseline_stats(self) -> Dict[str, Dict[str, float]]:
         """Return physics-grounded nominal baseline statistics for sensors S1-S5."""
         return {
-            "S1": {"mean": 60.0, "std": 1.5},
-            "S2": {"mean": 2.0, "std": 0.15},
-            "S3": {"mean": 5.0, "std": 0.25},
-            "S4": {"mean": 100.0, "std": 2.0},
-            "S5": {"mean": 0.5, "std": 0.05},
+            "S1": {"mean": 60.0, "std": 0.90},
+            "S2": {"mean": 2.0, "std": 0.030},
+            "S3": {"mean": 5.0, "std": 0.075},
+            "S4": {"mean": 30.0, "std": 0.450},
+            "S5": {"mean": 10.0, "std": 0.150},
         }
 
     def _init_default_detector(self) -> AnomalyDetector:

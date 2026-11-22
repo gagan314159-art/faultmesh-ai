@@ -1322,12 +1322,109 @@ render_investigation_reports = render_executive_reports_tab
 # Live IoT Mode Components
 # -----------------------------------------------------------------------------
 
+def compute_live_iot_operational_state(
+    mqtt_status: Dict[str, Any],
+    stats: Dict[str, Any],
+    telem_mgr: Optional[Any] = None,
+) -> Tuple[str, str, str]:
+    """Determine the comprehensive operational state of the Live IoT pipeline.
+
+    Returns:
+        Tuple of (state_name, badge_type, description):
+        1. Disconnected
+        2. Connecting
+        3. Connected but awaiting telemetry
+        4. Receiving telemetry
+        5. Calibrating
+        6. Ready for diagnosis
+        7. Insufficient data
+        8. Connection error
+    """
+    conn_state = mqtt_status.get("connection_state", "DISCONNECTED")
+    is_conn = mqtt_status.get("is_connected", False)
+    callbacks = mqtt_status.get("callbacks_received", 0)
+    valid_count = stats.get("valid_count", 0)
+    has_error = (conn_state == "ERROR") or (mqtt_status.get("last_error") is not None and not is_conn)
+
+    if has_error:
+        err_msg = mqtt_status.get("last_error") or "Broker connection error."
+        return "Connection error", "error", f"Connection error: {err_msg}"
+
+    if conn_state == "CONNECTING":
+        return "Connecting", "warning", f"Connecting to MQTT broker at {mqtt_status.get('broker_host', 'localhost')}:{mqtt_status.get('broker_port', 1883)}..."
+
+    if not is_conn:
+        return "Disconnected", "info", "MQTT broker disconnected. Configure broker endpoint and click 'Connect' in the sidebar."
+
+    # Connected to broker:
+    if callbacks == 0 or valid_count == 0:
+        return (
+            "Connected but awaiting telemetry",
+            "warning",
+            f"Broker connection active on topic '{mqtt_status.get('topic', 'faultmesh/sensors/#')}'. "
+            "Awaiting incoming sensor telemetry from publisher or software gateway.",
+        )
+
+    # Valid data is arriving:
+    if telem_mgr is not None:
+        cal_status = getattr(telem_mgr, "calibration_status", "uncalibrated")
+        operator_confirmed = getattr(telem_mgr, "operator_confirmed", False)
+        synced_count = len(getattr(telem_mgr, "synchronized_rows", []))
+        min_cal = getattr(telem_mgr, "min_calibration_samples", 30)
+
+        if cal_status == "calibrating":
+            return "Calibrating", "info", f"Baseline calibration in progress ({synced_count}/{min_cal} samples collected)."
+
+        if not operator_confirmed or cal_status != "calibrated":
+            if synced_count < min_cal:
+                return (
+                    "Receiving telemetry",
+                    "info",
+                    f"Active telemetry streaming. Baseline sample collection in progress: {synced_count}/{min_cal} required samples.",
+                )
+            else:
+                return (
+                    "Receiving telemetry",
+                    "info",
+                    f"Active telemetry streaming. Baseline ready: {synced_count} samples collected. Click 'Confirm & Calibrate' below to begin AI diagnosis.",
+                )
+
+        # Calibrated:
+        if synced_count < 15:
+            return (
+                "Insufficient data",
+                "warning",
+                f"Baseline calibrated, but waiting for evaluation window: {synced_count}/15 synchronized samples.",
+            )
+
+        return (
+            "Ready for diagnosis",
+            "success",
+            "Full AI diagnostic pipeline active. Continuous Isolation Forest scoring and graph-guided fault localization operational.",
+        )
+
+    return "Receiving telemetry", "info", "Active telemetry streaming."
+
+
 def render_live_comm_stats(
     st: Any,
     stats: Dict[str, Any],
     mqtt_status: Dict[str, Any],
+    telem_mgr: Optional[Any] = None,
 ) -> None:
     """Render comprehensive MQTT connection, subscription, and message validation metrics."""
+    state_name, badge_type, state_desc = compute_live_iot_operational_state(mqtt_status, stats, telem_mgr)
+
+    # Top-Level Pipeline Operational State Banner
+    if badge_type == "success":
+        st.success(f"🟢 **Pipeline Operational Status: {state_name}** — {state_desc}")
+    elif badge_type == "error":
+        st.error(f"🔴 **Pipeline Operational Status: {state_name}** — {state_desc}")
+    elif badge_type == "warning":
+        st.warning(f"🟡 **Pipeline Operational Status: {state_name}** — {state_desc}")
+    else:
+        st.info(f"🔵 **Pipeline Operational Status: {state_name}** — {state_desc}")
+
     c1, c2, c3, c4 = st.columns(4)
 
     state = mqtt_status.get("connection_state", "DISCONNECTED")

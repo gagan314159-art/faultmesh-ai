@@ -777,7 +777,7 @@ def _build_live_iot_view(
     # 1. Communication & Validation Statistics
     stats = mqtt_mgr.validator.get_stats()
     mqtt_status = mqtt_mgr.get_status()
-    render_live_comm_stats(st_ctx, stats, mqtt_status)
+    render_live_comm_stats(st_ctx, stats, mqtt_status, telem_mgr=telem_mgr)
 
     st_ctx.markdown("---")
 

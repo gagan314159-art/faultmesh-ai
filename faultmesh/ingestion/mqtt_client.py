@@ -144,7 +144,7 @@ class MQTTClientManager:
         thread_name = threading.current_thread().name
         client_obj_id = hex(id(self))
         rc_code = getattr(rc, "value", rc)
-        is_success = (rc_code == 0) or (hasattr(rc, "is_failure") and not rc.is_failure)
+        is_success = (rc_code == 0) and not getattr(rc, "is_failure", False)
 
         if is_success:
             with self._lock:
@@ -325,6 +325,15 @@ class MQTTClientManager:
         self.client_id = client_id
         client_obj_id = hex(id(self))
         queue_obj_id = hex(id(self.message_queue))
+
+        # Clean up any lingering previous client loop before creating a new connection
+        if self.client is not None:
+            try:
+                self.client.loop_stop()
+                self.client.disconnect()
+            except Exception:
+                pass
+            self.client = None
 
         try:
             self.client = self._create_paho_client(client_id)

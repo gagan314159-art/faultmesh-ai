@@ -338,32 +338,44 @@ class DataValidator:
                 return self._record_error("INVALID_TIMESTAMP", f"Invalid numeric epoch timestamp: {exc}", raw_preview, topic=topic)
         elif isinstance(raw_ts, str):
             clean_ts = raw_ts.strip()
-            # Replace trailing 'Z' with '+00:00' for standard fromisoformat
-            iso_str = clean_ts.replace("Z", "+00:00") if clean_ts.endswith("Z") else clean_ts
+            # Handle numeric epoch passed as string (e.g. "1700000000" or "1700000000123")
             try:
-                parsed_dt = datetime.fromisoformat(iso_str)
-                if parsed_dt.tzinfo is None:
-                    parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
-                epoch_sec = parsed_dt.timestamp()
-            except Exception:
-                # Fallback string formats
-                formats = [
-                    "%Y-%m-%dT%H:%M:%S.%f%z",
-                    "%Y-%m-%dT%H:%M:%S.%f",
-                    "%Y-%m-%d %H:%M:%S.%f",
-                    "%Y-%m-%dT%H:%M:%S",
-                    "%Y-%m-%d %H:%M:%S",
-                ]
-                for fmt in formats:
-                    try:
-                        parsed_dt = datetime.strptime(clean_ts, fmt).replace(tzinfo=timezone.utc)
-                        epoch_sec = parsed_dt.timestamp()
-                        break
-                    except ValueError:
-                        pass
+                numeric_val = float(clean_ts)
+                if not (math.isnan(numeric_val) or math.isinf(numeric_val)):
+                    if numeric_val > 1e11:
+                        numeric_val = numeric_val / 1000.0
+                    parsed_dt = datetime.fromtimestamp(numeric_val, tz=timezone.utc)
+                    epoch_sec = numeric_val
+            except (ValueError, OverflowError, OSError):
+                pass
 
-                if parsed_dt is None or epoch_sec is None:
-                    return self._record_error("INVALID_TIMESTAMP", f"Unrecognized timestamp string: '{raw_ts}'", raw_preview, topic=topic)
+            if parsed_dt is None:
+                # Replace trailing 'Z' with '+00:00' for standard fromisoformat
+                iso_str = clean_ts.replace("Z", "+00:00") if clean_ts.endswith("Z") else clean_ts
+                try:
+                    parsed_dt = datetime.fromisoformat(iso_str)
+                    if parsed_dt.tzinfo is None:
+                        parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+                    epoch_sec = parsed_dt.timestamp()
+                except Exception:
+                    # Fallback string formats
+                    formats = [
+                        "%Y-%m-%dT%H:%M:%S.%f%z",
+                        "%Y-%m-%dT%H:%M:%S.%f",
+                        "%Y-%m-%d %H:%M:%S.%f",
+                        "%Y-%m-%dT%H:%M:%S",
+                        "%Y-%m-%d %H:%M:%S",
+                    ]
+                    for fmt in formats:
+                        try:
+                            parsed_dt = datetime.strptime(clean_ts, fmt).replace(tzinfo=timezone.utc)
+                            epoch_sec = parsed_dt.timestamp()
+                            break
+                        except ValueError:
+                            pass
+
+                    if parsed_dt is None or epoch_sec is None:
+                        return self._record_error("INVALID_TIMESTAMP", f"Unrecognized timestamp string: '{raw_ts}'", raw_preview, topic=topic)
         else:
             return self._record_error("INVALID_TIMESTAMP", f"Timestamp must be ISO string or numeric epoch, got {type(raw_ts).__name__}", raw_preview, topic=topic)
 

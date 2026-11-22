@@ -28,6 +28,7 @@ from dashboard.components import (
     render_calibration_panel,
 )
 from dashboard.utils import SimConfig, SENSORS
+from faultmesh.ingestion import SENSOR_DEFINITIONS, STANDARD_UNITS
 
 # Sensor baseline specifications from PROJECT_RULES.md
 SENSOR_SPECIFICATIONS = [

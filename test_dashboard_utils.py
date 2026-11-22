@@ -1,4 +1,4 @@
-﻿from dashboard.utils import (
+from dashboard.utils import (
     SimConfig,
     run_simulation,
     run_detection,

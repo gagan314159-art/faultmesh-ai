@@ -586,3 +586,38 @@ class TestLiveIoTAnomalyDetectionAndExplainability:
         assert "S3" in readings.columns
         assert fault_dict is not None
         assert fault_dict.get("sensor") == "S3"
+
+    # 13. Regression test: build_anomaly_detection does not raise NameError for SENSOR_DEFINITIONS
+    def test_13_build_anomaly_detection_no_name_error(self) -> None:
+        from dashboard.layout import build_anomaly_detection
+        class MockStreamlitCtx:
+            def subheader(self, *args: Any, **kwargs: Any) -> None: pass
+            def markdown(self, *args: Any, **kwargs: Any) -> None: pass
+            def dataframe(self, *args: Any, **kwargs: Any) -> None: pass
+            def plotly_chart(self, *args: Any, **kwargs: Any) -> None: pass
+
+        mock_ctx = MockStreamlitCtx()
+        # Test with empty / None inputs
+        build_anomaly_detection(mock_ctx, None, None)
+
+        # Test with DataFrame scores (verifies lines 341 and 412)
+        scores_df = pd.DataFrame({
+            "time": [1, 2, 3],
+            "S1": [0.1, 0.2, 0.3],
+            "S2": [0.05, 0.05, 0.05],
+            "S3": [0.1, 0.7, 0.8],
+            "S4": [0.2, 0.2, 0.2],
+            "S5": [0.1, 0.1, 0.1],
+        })
+        onsets = {"S1": None, "S2": None, "S3": 2, "S4": None, "S5": None}
+        diagnostics = {
+            "S1": {"name": "Bearing Temp", "latest_value": 60.1, "unit": "°C", "anomaly_score": 0.3},
+            "S3": {"latest_value": 7.5, "anomaly_score": 0.8},
+        }
+        build_anomaly_detection(
+            mock_ctx,
+            scores=scores_df,
+            onsets=onsets,
+            sensor_diagnostics=diagnostics,
+            readings_df=scores_df,
+        )
